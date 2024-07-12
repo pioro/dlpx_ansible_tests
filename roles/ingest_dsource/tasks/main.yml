@@ -1,0 +1,146 @@
+- name: set_env_ids
+  set_fact:
+    stage_env_id: "{{ environments|json_query('json.result')|selectattr('name', 'equalto', r_ds_stg_env_name)|map(attribute='reference')| first }}"
+    
+- name: Print output
+  debug:
+    var: stage_env_id
+
+- name: set_repo_ids
+  set_fact:
+    stage_repo_id: "{{ repos|json_query('json.result')|selectattr('environment', 'equalto', stage_env_id )|selectattr('name', 'search', '^MSSQL Linux')|map(attribute='reference')| first }}"
+    
+
+- name: Print output
+  debug:
+    var: stage_repo_id
+
+
+- name: list source config
+  uri:
+    url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/sourceconfig
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  register: sourceconfigs
+
+
+
+- name: Print output z when
+  debug:
+    var: sourceconfigs
+  when: sourceconfigs|json_query('json.result')|selectattr('repository', 'equalto', stage_repo_id )|selectattr('name', 'equalto', r_ds_dsource_name)|length==0
+
+
+- name: adding new source config
+  uri:
+    url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/sourceconfig
+    method: POST
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+    body_format: json
+    body:
+      type: "AppDataStagedSourceConfig"
+      name: "{{ r_ds_dsource_name }}"
+      repository: "{{ stage_repo_id }}"
+      parameters: 
+          database_name: "{{ r_ds_dsource_name }}"
+  when: sourceconfigs|json_query('json.result')|selectattr('repository', 'equalto', stage_repo_id )|selectattr('name', 'equalto', r_ds_dsource_name)|length==0
+
+
+- name: get source config ref id 
+  uri:
+    url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/sourceconfig
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  register: sourceconfigs
+
+
+- name: set_source_config_id
+  set_fact:
+    stage_sourceconfig_id: "{{ sourceconfigs|json_query('json.result')|selectattr('repository', 'equalto', stage_repo_id )|selectattr('name', 'equalto', r_ds_dsource_name)|map(attribute='reference')| first }}"
+
+- name: Print output 
+  debug:
+    var: stage_sourceconfig_id
+
+
+- name: get staging host users
+  uri:
+    url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/environment/user?environment={{ stage_env_id }}"
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  register: stguser
+
+- name: set_stage_user_ref
+  set_fact:
+    stage_userhost_id: "{{ stguser|json_query('json.result')|selectattr('environment', 'equalto', stage_env_id )|map(attribute='reference')| first }}"
+
+
+
+
+- name: Print output 
+  debug:
+    var: stage_userhost_id
+
+
+- name: check if dSource exists
+  uri:
+    url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/database"
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  register: databases_list
+
+
+- name: ingest dSource
+  uri:
+    url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/database/link
+    method: POST
+    body_format: json
+    body:
+      type: "LinkParameters"
+      name: "{{ r_ds_dsource_name }}"
+      group: "GROUP-1"
+      linkData:
+        type: "AppDataStagedLinkData"
+        config: "{{ stage_sourceconfig_id }}"
+        stagingEnvironment: "{{ stage_env_id }}"
+        stagingEnvironmentUser: "{{ stage_userhost_id }}"
+        environmentUser: "{{ stage_userhost_id }}"
+        parameters:
+          instance_user: "{{ r_ds_stg_mssql_instance_user }}"
+          instance_password: "{{ r_ds_stg_mssql_instance_password }}"
+          backup_location: "{{ r_ds_stg_backup_location }}"
+          backup_pattern: "{{ r_ds_stg_backup_pattern }}"
+          mount_path: "{{ r_ds_stg_dsource_mount }}"
+          for_upgrade: false
+        syncParameters:
+          type: "AppDataSyncParameters"
+          parameters:
+            resync: true
+        sourcingPolicy:
+          type: "SourcingPolicy"
+          logsyncEnabled: false
+
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  when: databases_list|json_query('json.result')|selectattr('name', 'equalto', r_ds_dsource_name )|length==0
+  register: job_output
+
+- name: Print output
+  debug: 
+    var: job_output
+  when: job_output is not skipped
+
+
+
+- name: "Calling wait_for_job"
+  include_role:
+    name: wait_for_job
+    allow_duplicates: True
+  vars:
+    job: "{{ job_output }}"
+  when: job_output is not skipped

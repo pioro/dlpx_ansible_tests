@@ -1,0 +1,220 @@
+---
+- name: Using a REST API
+  become: false
+  hosts: localhost
+  vars:
+    env_list:
+      - "mssqllinuxtgt.xxx.co"
+      - "mssqllinuxstg.xxx.co"
+    stg_mssql_instance_user: "sa"
+    stg_mssql_instance_password: "password"
+    tgt_mssql_instance_user: "sa"
+    tgt_mssql_instance_password: "password"
+
+    dsources:
+       - dsource_name: "testdb_mem"
+         stg_mssql_instance_user: "{{ stg_mssql_instance_user }}"
+         stg_mssql_instance_password: "{{ stg_mssql_instance_password }}"
+         stg_backup_location: "/home/delphix/backup"
+         stg_backup_pattern: "*.bak"
+         stg_env_name: "mssqllinuxstg.xxx.co"
+       - dsource_name: "onegroup"
+         stg_mssql_instance_user: "{{ stg_mssql_instance_user }}"
+         stg_mssql_instance_password: "{{ stg_mssql_instance_password }}"
+         stg_backup_location: "/home/delphix/one"
+         stg_backup_pattern: "*.bak"
+         stg_env_name: "mssqllinuxstg.xxx.co"
+       - dsource_name: "bez"
+         stg_mssql_instance_user: "{{ stg_mssql_instance_user }}"
+         stg_mssql_instance_password: "{{ stg_mssql_instance_password }}"
+         stg_backup_location: "/home/delphix/bez"
+         stg_backup_pattern: "*.bak"
+         stg_env_name: "mssqllinuxstg.xxx.co"
+
+    vdbs:
+       - vdb_name: "vdb_mem"
+         dsource_name: "testdb_mem"
+         tgt_mssql_instance_user: "{{ tgt_mssql_instance_user }}"
+         tgt_mssql_instance_password: "{{ tgt_mssql_instance_password }}"
+         tgt_env_name: "mssqllinuxtgt.xxx.co"
+       - vdb_name: "vdb_one"
+         dsource_name: "onegroup"
+         tgt_mssql_instance_user: "{{ tgt_mssql_instance_user }}"
+         tgt_mssql_instance_password: "{{ tgt_mssql_instance_password }}"
+         tgt_env_name: "mssqllinuxtgt.xxx.co"
+       - vdb_name: "vdb_bez"
+         dsource_name: "bez"
+         tgt_mssql_instance_user: "{{ tgt_mssql_instance_user }}"
+         tgt_mssql_instance_password: "{{ tgt_mssql_instance_password }}"
+         tgt_env_name: "mssqllinuxtgt.xxx.co"
+    
+
+
+  gather_facts: false
+  tasks:
+
+  - name: Set session
+    uri:
+      url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/session
+      method: POST
+      body_format: json
+      body:
+        type: "APISession"
+        version: 
+          type: "APIVersion"
+          major: 1
+          minor: 11
+          micro: 10
+    register: session
+
+
+  - name: Print output
+    debug:
+      var: session.json
+
+  - name: Login to Delphix
+    uri:
+      url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/login
+      method: POST
+      body_format: json
+      body:
+        type: "LoginRequest"
+        username: "admin"
+        password: "delphix"
+      headers:
+            Cookie: "{{ session.cookies_string }}"
+    register: session
+
+
+  - name: Print output
+    debug:
+      var: session.json
+
+
+  - name: list environments
+    uri:
+      url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/environment
+      method: GET
+      headers:
+            Cookie: "{{ session.cookies_string }}"
+    register: environments
+
+  - name: Print current environments
+    ansible.builtin.debug:
+      var: environments.json.result | map(attribute='name')
+       
+  - name: define a list of missing env
+    set_fact:
+      missing_env_list: >-
+        {{ 
+          env_list 
+            | difference(
+              environments.json.result | map(attribute='name')
+            ) 
+        }}
+
+  - name: adding new env - debug
+    debug:
+      msg: "{{ item }}"
+    loop: "{{ missing_env_list }}"
+
+
+  - name: adding new env
+    uri:
+      url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/environment
+      method: POST
+      body_format: json
+      body:
+        type: "HostEnvironmentCreateParameters"
+        hostEnvironment:
+          type: "UnixHostEnvironment"
+          name: "{{ item }}"
+        hostParameters:
+          type: "UnixHostCreateParameters"
+          host:
+              type: "UnixHost"
+              address: "{{ item }}"
+              toolkitPath: "/u01/app/toolkit"
+        primaryUser:
+          type: "EnvironmentUser"
+          name: "delphix"
+          credential:
+              type: "PasswordCredential"
+              password: "delphix"
+      headers:
+            Cookie: "{{ session.cookies_string }}"
+    loop: "{{ missing_env_list }}"
+    register: job_output
+
+  - name: Print output
+    debug:
+      var: job_output.results|json_query('[*].json.job')
+
+
+  - name: "Calling wait_for_job"
+    include_role:
+      name: wait_for_job
+      allow_duplicates: True
+    vars:
+      job: "{{ item }}"
+    loop: "{{ job_output.results }}"
+    when: job_output is not skipped
+
+  - name: list environments
+    uri:
+      url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/environment
+      method: GET
+      headers:
+            Cookie: "{{ session.cookies_string }}"
+    register: environments
+
+
+
+  - name: get repo id 
+    uri:
+      url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/repository"
+      method: GET
+      headers:
+            Cookie: "{{ session.cookies_string }}"
+    register: repos
+
+
+  - name: "Create dsources"
+    include_role:
+      name: ingest_dsource
+      allow_duplicates: True
+    vars:
+      r_ds_dsource_name: "{{ item.dsource_name }}"
+      r_ds_stg_env_name: "{{ item.stg_env_name }}"
+      r_ds_stg_mssql_instance_user: "{{ item.stg_mssql_instance_user }}"
+      r_ds_stg_mssql_instance_password: "{{ item.stg_mssql_instance_password }}"
+      r_ds_stg_backup_location: "{{ item.stg_backup_location }}"
+      r_ds_stg_backup_pattern: "{{ item.stg_backup_pattern }}"
+    loop: "{{ dsources }}"
+
+
+  - name: "Create VDB"
+    include_role:
+      name: create_vdb
+      allow_duplicates: True
+    vars:
+      r_vdb_vdb_name: "{{ item.vdb_name }}"
+      r_vdb_dsource_name: "{{ item.dsource_name }}"
+      r_vdb_tgt_env_name: "{{ item.tgt_env_name }}"
+      r_vdb_tgt_mssql_instance_user: "{{ item.tgt_mssql_instance_user }}"
+      r_vdb_tgt_mssql_instance_password: "{{ item.tgt_mssql_instance_password }}"
+    loop: "{{ vdbs }}"
+
+
+  - name: "Create child VDB"
+    include_role:
+      name: create_vdb
+      allow_duplicates: True
+    vars:
+      r_vdb_vdb_name: "child"
+      r_vdb_dsource_name: "vdb_mem"
+      r_vdb_tgt_env_name: "mssqllinuxtgt.xxx.co"
+      r_vdb_tgt_mssql_instance_user: "sa"
+      r_vdb_tgt_mssql_instance_password: "password"
+
+

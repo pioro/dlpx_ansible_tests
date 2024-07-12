@@ -1,0 +1,1 @@
+r_vdb_tgt_vdb_mount: "/mnt/provision/{{ r_vdb_vdb_name }}"

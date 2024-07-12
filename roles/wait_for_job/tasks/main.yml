@@ -1,0 +1,49 @@
+---
+# - name: check 
+#   debug:
+#     var: job
+
+# - name: check action
+#   debug:
+#     var: job |json_query('json.action')
+
+
+# it has to wait at least 10 min - single job
+- name: wait for main action
+  uri:
+    url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/action/{{ job |json_query('json.action') }}"
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  until: job_output2|json_query('json.result.state') in ['SUSPENDED', 'CANCELED', 'COMPLETED', 'FAILED']
+  register: job_output2
+  retries: 22
+  delay: 30
+
+
+- name: get child action
+  uri:
+    url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/action?parentAction={{ job |json_query('json.action') }}"
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  register: child_action
+  when: job_output2 is not skipped
+
+
+# - name: Print output
+#   debug:
+#     var: child_action|json_query('json.result[*].reference')| first
+
+# it has to wait at least 10 min - single job
+- name: wait for child job
+  uri:
+    url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/action/{{ child_action|json_query('json.result[*].reference')| first }}"
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  until: job_output3|json_query('json.result.state') in ['SUSPENDED', 'CANCELED', 'COMPLETED', 'FAILED']
+  register: job_output3
+  retries: 22
+  delay: 30
+  when: child_action is not skipped

@@ -1,0 +1,91 @@
+
+
+
+- name: check if dSource and VDB exists
+  uri:
+    url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/database"
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  register: databases_list
+
+- name: dSource check
+  debug:
+    var: databases_list|json_query('json.result')|selectattr('name', 'equalto', r_vdb_dsource_name )|map(attribute='reference')| first | length>0
+
+
+- name: VDB check
+  debug:
+    var: databases_list|json_query('json.result')|selectattr('name', 'equalto', r_vdb_vdb_name )|length==0
+
+
+- name: set_env_ids
+  set_fact:
+    target_env_id: "{{ environments|json_query('json.result')|selectattr('name', 'equalto', r_vdb_tgt_env_name)|map(attribute='reference')| first }}"
+
+- name: Print output
+  debug:
+    var: target_env_id
+
+- name: set_repo_ids
+  set_fact:
+    target_repo_id: "{{ repos|json_query('json.result')|selectattr('environment', 'equalto', target_env_id )|selectattr('name', 'search', '^MSSQL Linux')|map(attribute='reference')| first }}"
+
+- name: Print output
+  debug:
+    var: target_repo_id
+
+- name: get target host users
+  uri:
+    url: "http://mssqllinuxdlpx.xxx.co/resources/json/delphix/environment/user?environment={{ target_env_id }}"
+    method: GET
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  register: tgtuser
+
+- name: set_target_user_ref
+  set_fact:
+    target_userhost_id: "{{ tgtuser|json_query('json.result')|selectattr('environment', 'equalto', target_env_id )|map(attribute='reference')| first }}"
+
+- name: create VDB
+  uri:
+    url: http://mssqllinuxdlpx.xxx.co/resources/json/delphix/database/provision
+    method: POST
+    body_format: json
+    body:
+      type: "AppDataProvisionParameters"
+      container: 
+        type: "AppDataContainer"
+        group: "GROUP-1"
+        name: "{{ r_vdb_vdb_name }}"
+      source: 
+        type: "AppDataVirtualSource"
+        name: "{{ r_vdb_vdb_name }}"
+        parameters: 
+            database_name: "{{ r_vdb_vdb_name }}"
+            mount_path: "{{ r_vdb_tgt_vdb_mount }}"
+            instance_user: "{{ r_vdb_tgt_mssql_instance_user }}"
+            instance_password: "{{ r_vdb_tgt_mssql_instance_password }}"
+        allowAutoVDBRestartOnHostReboot: false
+      sourceConfig: 
+          type: "AppDataDirectSourceConfig"
+          name: "{{ r_vdb_vdb_name }}"
+          repository: "{{ target_repo_id }}"
+          environmentUser: "{{ target_userhost_id }}"
+      timeflowPointParameters: 
+          type: "TimeflowPointSemantic"
+          container: "{{ databases_list|json_query('json.result')|selectattr('name', 'equalto', r_vdb_dsource_name )|map(attribute='reference')| first }}"
+          location: "LATEST_SNAPSHOT"
+        
+    headers:
+          Cookie: "{{ session.cookies_string }}"
+  when: (databases_list|json_query('json.result')|selectattr('name', 'equalto', r_vdb_vdb_name )|length==0) and (databases_list|json_query('json.result')|selectattr('name', 'equalto', r_vdb_dsource_name )|map(attribute='reference')| first| length>0) 
+  register: job_output
+
+- name: "Calling wait_for_job"
+  include_role:
+    name: wait_for_job
+    allow_duplicates: True 
+  vars:
+    job: "{{ job_output }}"
+  when: job_output is not skipped
